@@ -70,7 +70,121 @@ Run once:
 php setup.php
 ```
 
-## 🚀 4. Create the Server
+
+## 🚀 4. Set up the PHP server
+
+We'll create a minimal backend using PHP's built-in development server. This will handle `POST` requests to `/create-account`.
+
+Create a file named `index.php` with the following initial setup:
+
+```php
+<?php
+require 'vendor/autoload.php';
+
+use Dotenv\Dotenv;
+
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Headers: Content-Type");
+header("Access-Control-Allow-Methods: POST");
+
+$dotenv = Dotenv::createImmutable(__DIR__);
+$dotenv->safeLoad();
+
+// Database connection
+$db = new PDO('sqlite:database.sqlite');
+
+// Listen for POST requests at /create-account
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $_SERVER['REQUEST_URI'] === '/create-account') {
+    echo json_encode(['message' => 'Server is working. Ready to handle account creation.']);
+}
+?>
+```
+
+Now run the server:
+
+```bash
+php -S localhost:8000
+```
+
+You should see a success message when you send a POST request to `/create-account`.
+
+---
+
+## 🔗 5. Integrate Fingerprint into the server
+
+Next, update the `/create-account` route to fetch and validate the `requestId` from the Fingerprint API and check for fraud.
+
+Update your `index.php` like so:
+
+```php
+<?php
+require 'vendor/autoload.php';
+
+use Dotenv\Dotenv;
+use GuzzleHttp\Client;
+
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Headers: Content-Type");
+header("Access-Control-Allow-Methods: POST");
+
+$dotenv = Dotenv::createImmutable(__DIR__);
+$dotenv->safeLoad();
+
+$apiKey = $_ENV['FINGERPRINT_SECRET_API_KEY'];
+$db = new PDO('sqlite:database.sqlite');
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $_SERVER['REQUEST_URI'] === '/create-account') {
+    $input = json_decode(file_get_contents('php://input'), true);
+    $requestId = $input['requestId'] ?? null;
+    $username = $input['username'] ?? null;
+    $password = $input['password'] ?? null;
+
+    if (!$requestId || !$username || !$password) {
+        http_response_code(400);
+        echo json_encode(['error' => 'Missing required fields']);
+        exit;
+    }
+
+    $client = new Client([
+        'base_uri' => 'https://api.fpjs.io',
+        'headers' => ['Authorization' => "Bearer $apiKey"]
+    ]);
+
+    try {
+        $response = $client->get("/events/$requestId");
+        $event = json_decode($response->getBody(), true);
+        $visitorId = $event['products']['identification']['data']['visitorId'];
+        $botResult = $event['products']['botd']['data']['bot']['result'] ?? 'notDetected';
+
+        if ($botResult !== 'notDetected') {
+            http_response_code(403);
+            echo json_encode(['error' => 'Bot detected. Account creation blocked.']);
+            exit;
+        }
+
+        $stmt = $db->prepare("SELECT COUNT(*) FROM accounts WHERE visitorId = ?");
+        $stmt->execute([$visitorId]);
+        $count = $stmt->fetchColumn();
+
+        if ($count > 0) {
+            http_response_code(429);
+            echo json_encode(['error' => 'Duplicate account from same device detected.']);
+            exit;
+        }
+
+        $insert = $db->prepare("INSERT INTO accounts (username, password, visitorId) VALUES (?, ?, ?)");
+        $insert->execute([$username, $password, $visitorId]);
+
+        echo json_encode(['status' => 'Account created successfully']);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['error' => 'Failed to verify requestId', 'details' => $e->getMessage()]);
+    }
+}
+?>
+```
+
+
 
 Edit `index.php`:
 
@@ -142,7 +256,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $_SERVER['REQUEST_URI'] === '/creat
 ?>
 ```
 
-## 🧪 5. Test the API
+## 🧪 6. Test the API
 
 1. Start the PHP server:
 
